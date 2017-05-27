@@ -8,7 +8,8 @@ skip = function() {
                      "e1071","pROC","caret","glmnet","randomForest","gbm","rpart"))
 }
 
-library(doSNOW)
+
+library(doParallel)
 library(tidyverse)
 library(forcats)
 
@@ -51,13 +52,6 @@ library(rgl)
 
 
 
-## Initialize and Parallel Processing
-Sys.getenv("NUMBER_OF_PROCESSORS") 
-cl = makeCluster(4)
-registerDoSNOW(cl) #ON LINUX: registerDoParallel(cl)
-# stopCluster(cl) #stop cluster
-
-
 #######################################################################################################################-
 # Parameter ----
 #######################################################################################################################-
@@ -69,7 +63,7 @@ theme_my = theme_bw() +  theme(plot.title = element_text(hjust = 0.5))
 twocol = c("blue","red")
 
 col3d = colorRampPalette(c("cyan", "white", "magenta"))(100)
-colhex = colorRampPalette(c("blue", "yellow", "red"))(100)
+colhex = colorRampPalette(c("white", "blue", "yellow", "red"))(100)
 
 manycol = c('#00FF00','#0000FF','#FF0000','#01FFFE','#FFA6FE','#FFDB66','#006401','#010067','#95003A',
             '#007DB5','#FF00F6','#FFEEE8','#774D00','#90FB92','#0076FF','#D5FF00','#FF937E','#6A826C','#FF029D',
@@ -85,6 +79,37 @@ manycol = c('#00FF00','#0000FF','#FF0000','#01FFFE','#FFA6FE','#FFDB66','#006401
 #######################################################################################################################-
 # My Functions ----
 #######################################################################################################################-
+
+## Custom summary function for caret training
+mysummary = function(data, lev = NULL, model = NULL)
+{
+  #browser()
+  concord = function(obs, pred, n=100000) {
+    i.samp1 = sample(1:length(obs), n, replace = TRUE)
+    i.samp2 = sample(1:length(obs), n, replace = TRUE)
+    obs1 = obs[i.samp1]
+    obs2 = obs[i.samp2]
+    pred1 = pred[i.samp1]
+    pred2 = pred[i.samp2]
+    sum((obs1 > obs2) * (pred1 > pred2) + (obs1 < obs2) * (pred1 < pred2) + 0.5*(obs1 == obs2)) / sum(obs1 != obs2)
+  }
+  if (is.character(data$obs)) 
+    data$obs = factor(data$obs, levels = lev)
+  
+  isNA = is.na(data[, "pred"])
+  
+  pred = data[, "pred"][!isNA]
+  obs = data[, "obs"][!isNA]
+  
+  spear = cor(pred, obs, method = "spearman")
+  pear = cor(pred, obs, method = "pearson")
+  AUC = concord(pred, obs)
+  
+  out = c(spear, pear, AUC)
+  names(out) = c("spearman","pearson","AUC")
+  out
+}
+
 
 ## Calculate probabilty on all data from probabilt from sample data and the corresponding (prior) base probabilities 
 prob_samp2full = function(p_sample, b_sample, b_all) {
@@ -106,12 +131,11 @@ grid.draw.arrangelist <- function(x, ...) {
 
 
 ## Plot distribution of metric variables per stratum
-plot_distr_metr = function(outpdf, df = df.plot, vars = metr, imputepct, nbins = 50, color = colhex,
+plot_distr_metr = function(outpdf, df = df.plot, vars = metr, misspct, nbins = 50, color = colhex,
                            ncols = 3, nrows = 2, w = 12, h = 8) {
-  skip = function(){
-    outpdf = "./output/distr_metr.pdf";
-    vars = metr; nbins = 50; color = colhex; 
-  }
+  # Univariate variable importance
+  varimp = sqrt(filterVarImp(df[vars], df$target, nonpara = TRUE)[[1]])
+  names(varimp) = vars
 
   # Loop over vars
   plots = map(vars, ~ {
@@ -122,8 +146,10 @@ plot_distr_metr = function(outpdf, df = df.plot, vars = metr, imputepct, nbins =
     p = ggplot(data = df, aes_string(x = ., y = "target")) +
       geom_hex() + 
       scale_fill_gradientn(colours = color) +
-      geom_smooth(color = "black") +
-      labs(title = paste0(.," (", round(100*imputepct[.],1),"% imp.)"), x = "")
+      geom_smooth(color = "black", method = "gam", level = 0.95, size = 0.5) +
+      labs(title = paste0(.," (Imp.: ", round(varimp[.],2),")"),
+            x = paste0(.," (NA: ", misspct[.] * 100,"%)"))
+    
     
     # Inner Histogram
     p.inner = ggplot(data = df, aes_string(x = .)) +
@@ -135,7 +161,6 @@ plot_distr_metr = function(outpdf, df = df.plot, vars = metr, imputepct, nbins =
     tmp = ggplot_build(p)
     yrange = tmp$layout$panel_ranges[[1]]$y.range
     
-
     # Put all together
     p = p + 
       scale_y_continuous(limits = c(yrange[1] - 0.2*(yrange[2] - yrange[1]), NA)) +
@@ -150,8 +175,12 @@ plot_distr_metr = function(outpdf, df = df.plot, vars = metr, imputepct, nbins =
 
 
 ## Plot distribution of nominal variables per stratum
-plot_distr_nomi = function(outpdf, df, vars = nomi,
+plot_distr_nomi = function(outpdf, df, vars = nomi, ylim = NULL,
                            ncols = 4, nrows = 2, w = 12, h = 8) {
+  # Univariate variable importance
+  varimp = sqrt(filterVarImp(df[vars], df$target, nonpara = TRUE)[[1]])
+  names(varimp) = vars
+  
   # Loop over vars
   plots = map(vars, ~ {
     #. = vars[1]
@@ -164,15 +193,16 @@ plot_distr_nomi = function(outpdf, df, vars = nomi,
       geom_boxplot(varwidth = TRUE) +
       coord_flip() +
       scale_x_discrete(labels = paste0(levels(df[[.]]), " (", round(100 * table(df[[.]])/nrow(df), 1), "%)")) +
-      labs(title = ., x = "") +
+      labs(title = paste0(.," (Imp.: ", round(varimp[.],2),")"), x = "") +
       theme_my +
       theme(legend.position = "none") 
+    if (length(ylim)) p = p + ylim(ylim)
 
     # Get underlying data for max of y-value and range of x-value
     tmp = ggplot_build(p)
     yrange = tmp$layout$panel_ranges[[1]]$x.range
       
-    # Inner Boxplot
+    # Inner Barplot
     p.inner = ggplot(data = df, aes_string(x = .)) +
       geom_bar(fill = "grey", colour = "black", width = 0.9) +
       coord_flip() +
@@ -180,17 +210,16 @@ plot_distr_nomi = function(outpdf, df, vars = nomi,
     
     # Put all together
     p = p + 
-      scale_y_continuous(limits = c(yrange[1] - 0.2*(yrange[2] - yrange[1]), NA)) +
+      scale_y_continuous(limits = c(yrange[1] - 0.2*(yrange[2] - yrange[1]), ifelse(length(ylim), ylim[2], NA))) +
       theme_my +
       annotation_custom(ggplotGrob(p.inner), xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = yrange[1]) 
-    #if (. != vars[1]) p = p + theme(legend.position = "none") 
     p   
   })
   ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
 }
 
 ## Plot correlation of metric variables
-plot_corr_metr <- function(outpdf, df, vars=metr, imputepct, method = "Spearman", 
+plot_corr_metr <- function(outpdf, df, vars=metr, misspct, method = "Spearman", 
                            w = 8, h = 8) {
 
   # Correlation matrix
@@ -203,7 +232,7 @@ plot_corr_metr <- function(outpdf, df, vars=metr, imputepct, method = "Spearman"
   
   # Adapt labels
   rownames(m.corr) = colnames(m.corr) =
-    paste0(rownames(m.corr)," (", round(100*imputepct[rownames(m.corr)],1),"% imp.)")
+    paste0(rownames(m.corr)," (", round(100*misspct[rownames(m.corr)],1),"% imp.)")
   
   # Put in clustered order
   m.corr[which(is.na(m.corr))] = 0 #set NAs to 0
@@ -434,20 +463,14 @@ plot_partialdependence = function(outpdf, vars, df = df.interpret, fit = fit.gbm
 
   # Final model
   model = fit$finalModel
-  
-  # Derive offset
-  offset = model$initF - plot(model, i.var = "INT", type = "link", return.grid = TRUE)[1,"y"]
-  
+
   # Plot
   plots = map(vars, ~ {
     #. = vars[1]
     print(.)
     
-    # Plot data (must be adapted due to offset of plot(gbm) and possible undersampling)
-    
-    df.plot = plot(model, i.var = ., type = "link", return.grid = TRUE) #get plot data on link level
-    p_sample = 1 - (1 - 1/(1 + exp(df.plot$y + offset))) #add offset and calcualte dependence on response level
-    df.plot$y = prob_samp2full(p_sample, b_sample, b_all) #switch to correct probability of full data
+    # Plot data 
+    df.plot = plot(model, i.var = ., return.grid = TRUE) #get plot data 
     
     if (is.factor(df[[.]])) {
       # Width of bars correspond to freqencies
@@ -457,8 +480,9 @@ plot_partialdependence = function(outpdf, vars, df = df.interpret, fit = fit.gbm
       # Plot for a nominal variable
       p = ggplot(df.plot, aes_string(., "y")) +
         geom_bar(stat = "identity",  width = df.plot$width, fill = "grey", color = "black") +
-        labs(title = ., x = "", y = expression(paste("P(", hat(y), "=1)"))) +
-        scale_y_continuous(limits = ylim) +
+        labs(title = ., x = "", y = expression(paste(hat(y)))) +
+        #scale_y_continuous(limits = ylim) +
+        coord_cartesian(ylim = ylim) +
         theme_my         
     } else {
       # Plot for a metric variable
@@ -466,7 +490,7 @@ plot_partialdependence = function(outpdf, vars, df = df.interpret, fit = fit.gbm
       p = ggplot(df.plot, aes_string(., "y")) +
         geom_line(stat = "identity", color = "black") +
         geom_rug(aes(q, y), df.rug, sides = "b", col = "red") +
-        labs(title = ., x = "", y = expression(paste("P(", hat(y), "=1)"))) +
+        labs(title = ., x = "", y = expression(paste(hat(y)))) +
         scale_y_continuous(limits = ylim) +
         theme_my      
     }
@@ -478,10 +502,7 @@ plot_partialdependence = function(outpdf, vars, df = df.interpret, fit = fit.gbm
       varactual = .
       df.tmpboot = map_df(l.boot, ~ {
         model_boot = .$finalModel
-        offset_boot = model_boot$initF - plot(model_boot, i.var = "INT", type = "link", return.grid = TRUE)[1,"y"]
-        df.plot_boot = plot(model_boot, i.var = varactual, type = "link", return.grid = TRUE)
-        p_sample_boot = 1 - (1 - 1/(1 + exp(df.plot_boot$y + offset_boot)))
-        df.plot_boot$y = prob_samp2full(p_sample_boot, b_sample, b_all)
+        df.plot_boot = plot(model_boot, i.var = varactual, return.grid = TRUE)
         df.plot_boot
       } , .id = "run")
       
@@ -495,8 +516,8 @@ plot_partialdependence = function(outpdf, vars, df = df.interpret, fit = fit.gbm
           geom_line(aes_string(., "y"), df.plot, stat = "identity", color = "black") #plot black line again
       }
     }
-    # Add (prior) base probability
-    p + geom_hline(yintercept = b_all, linetype = 3)
+    # Add overall average
+    p + geom_hline(yintercept = mean(df.interpret$target), linetype = 3)
   })
   ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
 }
@@ -584,18 +605,13 @@ plot_inter = function(outpdf, vars = inter, df = df.interpret, fit = fit.gbm,
   
   # Final model
   model = fit$finalModel
-  
-  # Derive offset
-  offset = model$initF - plot(model, i.var = "INT", type = "link", return.grid = TRUE)[1,"y"]
-  
+
   # Marginal plots for digonal
   plots_marginal = map(vars, ~ {
     #.=vars
     # Get interaction data
-    df.plot = plot(model, i.var = ., type = "link", return.grid = TRUE) #get plot data on link level
-    p_sample = 1 - (1 - 1/(1 + exp(df.plot$y + offset))) #add offset and calcualte dependence on response level
-    df.plot$y = prob_samp2full(p_sample, b_sample, b_all) #switch to correct probability of full data
-    
+    df.plot = plot(model, i.var = ., return.grid = TRUE) #get plot data
+
     if (is.factor(df[[.]])) {
       # Width of bars correspond to freqencies
       tmp = table(df[,.])
@@ -604,9 +620,10 @@ plot_inter = function(outpdf, vars = inter, df = df.interpret, fit = fit.gbm,
       # Plot for a nominal variable
       p = ggplot(df.plot, aes_string(., "y", fill = .)) +
         geom_bar(stat = "identity",  width = df.plot$width, color = "black") +
-        labs(title = ., x = "", y = expression(paste("P(", hat(y), "=1)"))) +
+        labs(title = ., x = "", y = expression(paste(hat(y)))) +
         scale_fill_manual(values = manycol) +
-        scale_y_continuous(limits = ylim) +
+        #scale_y_continuous(limits = ylim) +
+        coord_cartesian(ylim = ylim) +
         theme_my + 
         theme(legend.position = "none")
     } else {
@@ -615,20 +632,17 @@ plot_inter = function(outpdf, vars = inter, df = df.interpret, fit = fit.gbm,
       p = ggplot(df.plot, aes_string(., "y")) +
         geom_line(stat = "identity", color = "black") +
         geom_rug(aes(q, y), df.rug, sides = "b", col = "red") +
-        labs(title = ., x = "", y = expression(paste("P(", hat(y), "=1)"))) +
+        labs(title = ., x = "", y = expression(paste(hat(y)))) +
         scale_y_continuous(limits = ylim) +
         theme_my      
     }
-    p + geom_hline(yintercept = b_all, linetype = 3)
+    # Add overall average
+    p + geom_hline(yintercept = mean(df.interpret$target), linetype = 3)
   })
   
   # Interaction plots 
-  df.plot = plot(model, i.var = vars, type = "link", return.grid = TRUE) #get plot data on link level
-  p_sample = 1 - (1 - 1/(1 + exp(df.plot$y + offset))) #add offset and calcualte dependence on response level
-  df.plot$y = prob_samp2full(p_sample, b_sample, b_all) #switch to correct probability of full data
-  # quantile(df$TT4, seq(0,1, length.out=100))
-  # (max(df$TT4) - min(df$TT4))/99 + min(df$TT4)
-  
+  df.plot = plot(model, i.var = vars, return.grid = TRUE) #get plot data
+
   if (sum(map_lgl(df.plot[vars], ~ is.factor(.))) == 2) {
     # Mosaicplot for nominal-nominal interaction
     plots_inter = map(1:2, ~ { 
@@ -646,9 +660,9 @@ plot_inter = function(outpdf, vars = inter, df = df.interpret, fit = fit.gbm,
     # Grouped line chart for metric-nominal interaction
     p = ggplot(df.plot, aes_string(vars[1], "y", color = vars[2])) +
       geom_line(stat = "identity") +
-      labs(y = expression(paste("P(", hat(y), "=1)"))) +
+      labs(y = expression(paste(hat(y)))) +
       scale_color_manual(values = manycol) +
-      scale_y_continuous(limits = ylim*2) +
+      scale_y_continuous(limits = ylim) +
       guides(color = guide_legend(reverse = TRUE)) +
       theme_my      
     plots_inter = list(p,p)
@@ -665,7 +679,7 @@ plot_inter = function(outpdf, vars = inter, df = df.interpret, fit = fit.gbm,
       
       ggplot(df.tmp, aes_string(vars[1], "y", color = vars[2])) +
         geom_line(stat = "identity") +
-        labs(y = expression(paste("P(", hat(y), "=1)"))) +
+        labs(y = expression(paste(hat(y)))) +
         scale_color_manual(values = manycol) +
         scale_y_continuous(limits = ylim) +
         guides(color = guide_legend(reverse = TRUE)) +
@@ -686,15 +700,10 @@ plot_inter_active = function(outfile, vars = inter, df = df.interpret, fit = fit
   
   # Final model
   model = fit$finalModel
-  
-  # Derive offset
-  offset = model$initF - plot(model, i.var = "INT", type = "link", return.grid = TRUE)[1,"y"]
-  
+
   # Get interaction data
-  df.plot = plot(model, i.var = vars, type = "link", return.grid = TRUE) #get plot data on link level
-  p_sample = 1 - (1 - 1/(1 + exp(df.plot$y + offset))) #add offset and calcualte dependence on response level
-  df.plot$y = prob_samp2full(p_sample, b_sample, b_all) #switch to correct probability of full data
-  
+  df.plot = plot(model, i.var = vars, return.grid = TRUE) #get plot data 
+
   # Prepare 3d plot
   x = unique(df.plot[[vars[1]]])
   y = unique(df.plot[[vars[2]]])

@@ -4,8 +4,19 @@
 #######################################################################################################################-
 
 load("1_explore.rdata")
-source("0_init.R")
-add_boot = FALSE
+source("./code/0_init.R")
+
+
+## Initialize parallel processing
+Sys.getenv("NUMBER_OF_PROCESSORS") 
+cl = makeCluster(4)
+registerDoParallel(cl) 
+# stopCluster(cl) #stop cluster
+
+
+# Do not bootstrap
+l.boot = NULL
+
 
 
 
@@ -16,10 +27,6 @@ add_boot = FALSE
 ## Data for interpretation
 df.interpret = as.data.frame(df.samp)
 df.interpret$INT = 1 #Add intercept variable (needed for partial dependence plots)
-
-# Define prior base probabilities (needed to correctly switch probabilities of undersampled data)
-b_all = mean(df$target_num)
-b_sample = mean(df.interpret$target_num)
 
 
 
@@ -37,16 +44,15 @@ for (sim in 1:nsim) {
   df.train = df.interpret[-i.holdout,]    
   
   # Model and predict holdout
-  ctrl = trainControl(method = "none",  #Do not tune! 
-                      summaryFunction = twoClassSummary, classProbs = T, returnResamp = "final")
-  fit = train( df.train[predictors], df.train$target, trControl = ctrl, metric = "ROC",
+  ctrl = trainControl(method = "none")
+  fit = train( df.train[predictors], df.train$target, trControl = ctrl, metric = "spearman",
                method = "gbm", 
                tuneGrid = expand.grid(n.trees = 700, interaction.depth = 6, 
                                       shrinkage = 0.01, n.minobsinnode = 10), 
                verbose = FALSE )
-  yhat_holdout = c(yhat_holdout, predict(fit, df.holdout[predictors], type = "prob", na.action = na.pass)[,2]) 
-  y_holdout = c(y_holdout, as.character(df.holdout$target))
-  print(performance( prediction(yhat_holdout, y_holdout), "auc" )@y.values[[1]])
+  yhat_holdout = c(yhat_holdout, predict(fit, df.holdout[predictors])) 
+  y_holdout = c(y_holdout, df.holdout$target)
+  print(cor(yhat_holdout, y_holdout, method = "spearman"))
 }
 
 
@@ -61,10 +67,9 @@ plot_performance("./output/performance.pdf", yhat_holdout, y_holdout)
 #######################################################################################################################-
 
 ## Get model for all data
-ctrl = trainControl(method = "none",  #Do not tune! 
-                    summaryFunction = twoClassSummary, classProbs = T, returnResamp = "final")
+ctrl = trainControl(method = "none")
 
-fit.gbm = train( df.interpret[c("INT",predictors)], df.interpret$target, trControl = ctrl, metric = "ROC",
+fit.gbm = train( df.interpret[c("INT",predictors)], df.interpret$target, trControl = ctrl, metric = "spearman",
              method = "gbm", 
              tuneGrid = expand.grid(n.trees = 700, interaction.depth = 6, 
                                     shrinkage = 0.01, n.minobsinnode = 10), 
@@ -84,7 +89,7 @@ l.boot = foreach(i = 1:nboot, .combine = c, .packages = c("caret")) %dopar% {
   
   # Model
   df.boot$INT = 1
-  fit.gbm = train( df.boot[c("INT",predictors)], df.boot$target, trControl = ctrl, metric = "ROC",
+  fit.gbm = train( df.boot[c("INT",predictors)], df.boot$target, trControl = ctrl, metric = "spearman",
                method = "gbm", 
                tuneGrid = expand.grid(n.trees = 700, interaction.depth = 6, 
                                       shrinkage = 0.01, n.minobsinnode = 10), 
@@ -107,14 +112,14 @@ plot_variableimportance("./output/variableimportance_gbm.pdf", vars = topn_varim
 
 ## Partial dependence (only for gbm)
 # Default plots
-plot(fit.gbm$finalModel, i.var = "age", type = "link") #-> shows 1-P(target="Y") !!!
-plot(fit.gbm$finalModel, i.var = 7, type = "response") 
+plot(fit.gbm$finalModel, i.var = "age") 
+plot(fit.gbm$finalModel, i.var = 7) 
 
 # Partial dependence only for topn important variables 
 topn = 10
 (topn_varimp = rownames(varImp(fit.gbm)$importance)[order(varImp(fit.gbm)$importance, decreasing = TRUE)][1:topn])
 plot_partialdependence("./output/partialdependance_gbm.pdf", vars = topn_varimp, l.boot = l.boot, 
-                       ylim = c(0,0.3), ncols = 5, nrows = 2, w = 18, h = 12)
+                       ylim = c(1,3), ncols = 5, nrows = 2, w = 18, h = 12)
 
 
 
@@ -125,15 +130,15 @@ plot_partialdependence("./output/partialdependance_gbm.pdf", vars = topn_varimp,
 
 ## Test for interaction (only for gbm)
 (intervars = rownames(varImp(fit.gbm)$importance)[order(varImp(fit.gbm)$importance, decreasing = TRUE)][1:10])
-plot_interactiontest("./output/interactiontest_gbm.pdf", vars = intervars, l.boot = l.boot)
+plot_interactiontest("./output/interactiontest_gbm.pdf", vars = intervars, l.boot = NULL)
 
 
 ## -> Relvant interactions
 inter1 = c("TT4","TSH_LOG_")
 inter2 = c("sex","referral_source_OTHER_") 
 inter3 = c("TT4","referral_source_OTHER_")
-plot_inter("./output/inter1.pdf", inter1, ylim = c(0,.4))
-plot_inter("./output/inter2.pdf", inter2, ylim = c(0,.4))
-plot_inter("./output/inter3.pdf", inter3, ylim = c(0,.4))
+plot_inter("./output/inter1.pdf", inter1, ylim = c(1,3))
+plot_inter("./output/inter2.pdf", inter2, ylim = c(1,3))
+plot_inter("./output/inter3.pdf", inter3, ylim = c(1,3))
 
 plot_inter_active("./output/anim", vars = inter1, duration = 3)
