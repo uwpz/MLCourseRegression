@@ -471,7 +471,7 @@ plot_partialdependence = function(outpdf, vars, df = df.interpret, fit = fit.gbm
     
     # Plot data 
     df.plot = plot(model, i.var = ., return.grid = TRUE) #get plot data 
-    
+
     if (is.factor(df[[.]])) {
       # Width of bars correspond to freqencies
       tmp = table(df[,.])
