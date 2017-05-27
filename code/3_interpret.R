@@ -4,8 +4,19 @@
 #######################################################################################################################-
 
 load("1_explore.rdata")
-source("0_init.R")
-add_boot = FALSE
+source("./code/0_init.R")
+
+
+## Initialize parallel processing
+Sys.getenv("NUMBER_OF_PROCESSORS") 
+cl = makeCluster(4)
+registerDoParallel(cl) 
+# stopCluster(cl) #stop cluster
+
+
+# Do not bootstrap
+l.boot = NULL
+
 
 
 
@@ -16,10 +27,6 @@ add_boot = FALSE
 ## Data for interpretation
 df.interpret = as.data.frame(df.samp)
 df.interpret$INT = 1 #Add intercept variable (needed for partial dependence plots)
-
-# Define prior base probabilities (needed to correctly switch probabilities of undersampled data)
-b_all = mean(df$target_num)
-b_sample = mean(df.interpret$target_num)
 
 
 
@@ -37,16 +44,15 @@ for (sim in 1:nsim) {
   df.train = df.interpret[-i.holdout,]    
   
   # Model and predict holdout
-  ctrl = trainControl(method = "none",  #Do not tune! 
-                      summaryFunction = twoClassSummary, classProbs = T, returnResamp = "final")
-  fit = train( df.train[predictors], df.train$target, trControl = ctrl, metric = "ROC",
+  ctrl = ctrl_none
+  fit = train( df.train[predictors], df.train$target, trControl = ctrl, metric = "spearman",
                method = "gbm", 
                tuneGrid = expand.grid(n.trees = 700, interaction.depth = 6, 
                                       shrinkage = 0.01, n.minobsinnode = 10), 
                verbose = FALSE )
-  yhat_holdout = c(yhat_holdout, predict(fit, df.holdout[predictors], type = "prob", na.action = na.pass)[,2]) 
-  y_holdout = c(y_holdout, as.character(df.holdout$target))
-  print(performance( prediction(yhat_holdout, y_holdout), "auc" )@y.values[[1]])
+  yhat_holdout = c(yhat_holdout, predict(fit, df.holdout[predictors])) 
+  y_holdout = c(y_holdout, df.holdout$target)
+  print(cor(yhat_holdout, y_holdout, method = "spearman"))
 }
 
 
@@ -61,10 +67,9 @@ plot_performance("./output/performance.pdf", yhat_holdout, y_holdout)
 #######################################################################################################################-
 
 ## Get model for all data
-ctrl = trainControl(method = "none",  #Do not tune! 
-                    summaryFunction = twoClassSummary, classProbs = T, returnResamp = "final")
+ctrl = ctrl_none
 
-fit.gbm = train( df.interpret[c("INT",predictors)], df.interpret$target, trControl = ctrl, metric = "ROC",
+fit.gbm = train( df.interpret[c("INT",predictors)], df.interpret$target, trControl = ctrl, metric = "spearman",
              method = "gbm", 
              tuneGrid = expand.grid(n.trees = 700, interaction.depth = 6, 
                                     shrinkage = 0.01, n.minobsinnode = 10), 
@@ -84,7 +89,7 @@ l.boot = foreach(i = 1:nboot, .combine = c, .packages = c("caret")) %dopar% {
   
   # Model
   df.boot$INT = 1
-  fit.gbm = train( df.boot[c("INT",predictors)], df.boot$target, trControl = ctrl, metric = "ROC",
+  fit.gbm = train( df.boot[c("INT",predictors)], df.boot$target, trControl = ctrl, metric = "spearman",
                method = "gbm", 
                tuneGrid = expand.grid(n.trees = 700, interaction.depth = 6, 
                                       shrinkage = 0.01, n.minobsinnode = 10), 
@@ -107,8 +112,8 @@ plot_variableimportance("./output/variableimportance_gbm.pdf", vars = topn_varim
 
 ## Partial dependence (only for gbm)
 # Default plots
-plot(fit.gbm$finalModel, i.var = "age", type = "link") #-> shows 1-P(target="Y") !!!
-plot(fit.gbm$finalModel, i.var = 7, type = "response") 
+plot(fit.gbm$finalModel, i.var = "age") 
+plot(fit.gbm$finalModel, i.var = 7) 
 
 # Partial dependence only for topn important variables 
 topn = 10
