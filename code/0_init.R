@@ -311,6 +311,7 @@ plot_corr_nomi <- function(outpdf, df, vars = nomi,
 ## ROC, Calibration, Gain, Lift, Confusion
 plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", colors = twocol, colgrad = colhex, ylim = NULL,
                             ncols = 2, nrows = 2, w = 12, h = 8) {
+
   
   # Prepare
   pred_obj = mysummary(data.frame(obs = y_holdout, pred = yhat_holdout))
@@ -374,6 +375,11 @@ plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", col
   
   # Plot
   plots = list(p_perf, p_res, p_calib, p_pred)
+    labs(title = "Calibration", x = "Midpoint Predictions", y = "Observed Average") +
+    theme_my 
+  
+  # Plot
+  plots = list(p_perf, p_pred, p_calib)
   ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
 }
 
