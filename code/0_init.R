@@ -10,6 +10,7 @@ skip = function() {
 
 
 library(doParallel)
+library(caret)
 library(tidyverse)
 library(forcats)
 
@@ -20,7 +21,6 @@ library(Hmisc)
 
 library(d3heatmap)
 library(htmlwidgets)
-library(caret)
 library(ROCR)
 library(stringr)
 library(rgl)
@@ -164,7 +164,7 @@ plot_distr_metr = function(outpdf, df = df.plot, vars = metr, misspct, nbins = 5
     # Put all together
     p = p + 
       scale_y_continuous(limits = c(yrange[1] - 0.2*(yrange[2] - yrange[1]), NA)) +
-      theme_my +
+      theme(plot.title = element_text(hjust = 0.5)) +
       annotation_custom(ggplotGrob(p.inner), xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = yrange[1]) 
     #if (. != vars[1]) p = p + theme(legend.position = "none") 
     p 
@@ -309,34 +309,45 @@ plot_corr_nomi <- function(outpdf, df, vars = nomi,
 
 
 ## ROC, Calibration, Gain, Lift, Confusion
-plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", colors = twocol,
-                            ncols = 4, nrows = 2, w = 18, h = 12) {
+plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", colors = twocol, colgrad = colhex, ylim = NULL,
+                            ncols = 3, nrows = 1, w = 18, h = 6) {
   
   # Prepare
-  pred_obj = prediction(yhat_holdout, y_holdout)
-  auc = performance(pred_obj, "auc" )@y.values[[1]]
-  tprfpr = performance( pred_obj, "tpr", "fpr")
-  precrec = performance( pred_obj, "ppv", "rec")
-  df.precrec = data.frame("rec" = precrec@x.values[[1]], "prec" = precrec@y.values[[1]], 
-                          x = 100*(1:length(precrec@x.values[[1]]))/length(precrec@x.values[[1]]))
-  df.precrec[is.nan(df.precrec$prec),"prec"] = 1
-  df.preds = data.frame(target = y_holdout, Prediction = yhat_holdout)
+  pred_obj = mysummary(data.frame(obs = y_holdout, pred = yhat_holdout))
+  spearman = round(pred_obj["spearman"], 2)
+  df.perf = data.frame(y = y_holdout, yhat = yhat_holdout, res = y_holdout - yhat_holdout, 
+                       midpoint = cut(df.perf$yhat, quantile(df.perf$yhat, seq(0,1,0.2)), include.lowest = TRUE))
+  df.preds = data.frame(type = c(rep("y", length(y_holdout)), rep("yhat", length(y_holdout))),
+                        value = c(y_holdout, yhat_holdout))
+  df.calib = df.perf %>% group_by(midpoint) %>% summarise(y = mean(y), yhat = mean(yhat))
   
-  
-  # Stratified distribution of predictions (plot similar to plot_distr_metr)
-  p_pred = ggplot(data = df.preds, aes_string("Prediction")) +
-    geom_histogram(aes(y = ..density.., fill = target), bins = 40, position = "identity") +
-    geom_density(aes(color = target)) +
-    scale_fill_manual(values = alpha(colors, .2), name = "Target (y)") + 
-    scale_color_manual(values = colors, name = "Target (y)") +
-    labs(title = "Predictions", x = expression(paste("Prediction (", hat(y),")", sep = ""))) +
+  # Performance
+  p_perf = ggplot(data = df.perf, aes_string("yhat", "res")) +
+    geom_hex() + 
+    scale_fill_gradientn(colors = colgrad, name = "count") +
+    geom_smooth(color = "black", method = "gam", level = 0.95, size = 0.5) +
+    geom_abline(intercept = 0, slope = 1, color = "grey") + 
+    #ylim(range(df.preds$value)) +
+    #xlim(range(df.preds$value)) +
+    labs(title = bquote(paste("Predictions ", hat(y), " vs Target y (", rho, " = ", .(spearman), ")", sep = "")),
+         y = expression(hat(y))) +
+    theme(plot.title = element_text(hjust = 0.5))
+  if (length(ylim)) p_perf = p_perf + xlim(ylim) + ylim(ylim)
+
+  # Distribution of predictions and target (plot similar to plot_distr_metr)
+  p_pred = ggplot(data = df.preds, aes_string("value")) +
+    geom_histogram(aes(y = ..density.., fill = type), bins = 40, position = "identity") +
+    geom_density(aes(color = type)) +
+    scale_fill_manual(values = alpha(colors, .2), labels = c("y", expression(paste(hat(y)))), name = " ") + 
+    scale_color_manual(values = colors, labels = c("y", expression(paste(hat(y)))), name = " ") +
+    labs(title = expression(paste("Predictions (", hat(y), ") vs Target (y)", sep = "")), x = " ") +
     guides(fill = guide_legend(reverse = TRUE), color = guide_legend(reverse = TRUE))
   tmp = ggplot_build(p_pred)
-  p.inner = ggplot(data = df.preds, aes_string("target", "Prediction")) +
-    geom_boxplot(aes_string(color = "target")) +
+  p.inner = ggplot(data = df.preds, aes_string("type", "value")) +
+    geom_boxplot(aes_string(color = "type")) +
     coord_flip() +
     scale_y_continuous(limits = c(min(tmp$data[[1]]$xmin), max(tmp$data[[1]]$xmax))) +
-    scale_color_manual(values = colors, name = "Target") +
+    scale_color_manual(values = colors, name = " ") +
     theme_void() +
     theme(legend.position = "none")
   p_pred = p_pred + 
@@ -344,78 +355,18 @@ plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", col
     theme_my +
     annotation_custom(ggplotGrob(p.inner), xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = 0) 
 
-  
-  # ROC
-  p_roc = ggplot(data.frame("fpr" = tprfpr@x.values[[1]], "tpr" = tprfpr@y.values[[1]]), aes(x = fpr, y = tpr)) +
-    geom_line(color = "blue", size = .5) +
-    geom_abline(intercept = 0, slope = 1, color = "grey") + 
-    labs(title = paste0("ROC (auc=", round(auc,3), ")"), x = expression(paste("fpr: P(", hat(y), "=1|y=0)", sep = "")),
-         y = expression(paste("tpr: P(", hat(y), "=1|y=1)", sep = ""))) + 
-    #geom_label(data = data.frame(x = 0.9, y = 0.1, text = paste0("AUC: ",round(auc,3))), aes(x = x, y = y, label = text)) +
-    theme_my 
-  
-  # Gain + Lift: NOT CORRECT for all data due to undersampling -> need to oversample positives (y_holdout) and ...  
-  # ... adapt predictions (yhat_holdout)
-  tmp = ifelse(y_holdout == "Y", 1, 0)[order(yhat_holdout, decreasing = TRUE)] 
-  df.gain = data.frame("x" = 100*(1:length(yhat_holdout))/length(yhat_holdout),
-                       "gain" = 100*cumsum(tmp)/sum(tmp))
-  df.gain$lift = df.gain$gain/df.gain$x                     
-  p_gain = ggplot(df.gain) +
-    geom_polygon(aes(x, y), data.frame(x = c(0,100,100*sum(tmp)/length(tmp)), y = c(0,100,100)), fill = "grey90") +
-    geom_line(aes(x, gain), df.gain, color = "blue", size = .5) +
-    labs(title = "Gain", x = "% Samples Tested", y = "% Positive Samples Found") +
-    theme_my 
-  p_gain
-  p_lift = ggplot(df.gain) +
-    geom_line(aes(x, lift), df.gain, color = "blue", size = .5) +
-    labs(title = "Lift", x = "% Samples Tested", y = "Lift") +
-    theme_my 
-  
-  
-  # Calibrate:  CORRECT also for all data as invariant to undersampling 
-  df.calib = calibration(y~yhat, data.frame(y = y_holdout, yhat = 1 - yhat_holdout), cuts = 5)$data
-  p_calib = ggplot(df.calib, aes(midpoint, Percent)) +
+  # Calibration
+  p_calib = ggplot(df.calib, aes(yhat, y)) +
     geom_line(color = "blue") +
     geom_point(color = "blue") +  
+    xlim(range(c(df.calib$y,df.calib$yhat))) +
+    ylim(range(c(df.calib$y,df.calib$yhat))) +
     geom_abline(intercept = 0, slope = 1, color = "grey") + 
-    scale_x_continuous(limits = c(0,100)) + scale_y_continuous(limits = c(0,100)) +
-    labs(title = "Calibration", x = "Midpoint Predicted Event Probability", y = "Observed Event Percentage") +
+    labs(title = "Calibration", x = "Midpoint Predictions", y = "Observed Average") +
     theme_my 
-  
-  
-  # Precision Recall: NOT CORRECT for all data due to undersampling -> need to oversample positives (y_holdout) and ...  
-  # ... adapt predictions (yhat_holdout)
-  p_precrec = ggplot(df.precrec, aes(rec, prec)) +
-    geom_line(color = "blue", size = .5) +
-    labs(title = "Precision Recall Curve", x = expression(paste("recall=tpr: P(", hat(y), "=1|y=1)", sep = "")),
-         y = expression(paste("precision: P(y=1|", hat(y), "=1)", sep = ""))) +
-    theme_my 
-  p_precrec
-  
-  
-  # Only Precision: NOT CORRECT for all data due to undersampling
-  p_prec = ggplot(df.precrec, aes(x, prec)) +
-    geom_line(color = "blue", size = .5) +
-    labs(title = "Precision", x = "% Samples Tested",
-         y = expression(paste("precision: P(y=1|", hat(y), "=1)", sep = ""))) +
-    theme_my
-  
-  
-  # Condusion Matrix: NOT CORRECT for all data due to undersampling
-  conf_obj = confusionMatrix(ifelse(yhat_holdout > 0.5,"Y","N"), y_holdout)
-  df.confu = as.data.frame(conf_obj$table)
-  p_confu = ggplot(df.confu, aes(Prediction, Reference)) +
-    geom_tile(aes(fill = Freq), color = "darkgrey") + 
-    geom_text(aes(label = Freq)) +
-    scale_fill_gradient(low = "white", high = "blue") +
-    scale_y_discrete(limits = rev(levels(df.confu$Reference))) +
-    labs(title = paste0("Confusion Matrix (Accuracy = ", round(conf_obj$overall["Accuracy"], 3), ")")) +
-    theme_my 
-  p_confu
-  
   
   # Plot
-  plots = list(p_roc, p_pred, p_calib, p_confu, p_gain, p_lift, p_precrec, p_prec)
+  plots = list(p_perf, p_pred, p_calib)
   ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
 }
 
