@@ -10,6 +10,7 @@ skip = function() {
 
 
 library(doParallel)
+library(plyr)
 library(caret)
 library(tidyverse)
 library(forcats)
@@ -131,7 +132,7 @@ grid.draw.arrangelist <- function(x, ...) {
 
 
 ## Plot distribution of metric variables per stratum
-plot_distr_metr = function(outpdf, df = df.plot, vars = metr, misspct, nbins = 50, color = colhex,
+plot_distr_metr = function(outpdf, df = df.plot, vars = metr, misspct, nbins = 50, color = colhex, ylim = NULL,
                            ncols = 3, nrows = 2, w = 12, h = 8) {
   # Univariate variable importance
   varimp = sqrt(filterVarImp(df[vars], df$target, nonpara = TRUE)[[1]])
@@ -149,6 +150,7 @@ plot_distr_metr = function(outpdf, df = df.plot, vars = metr, misspct, nbins = 5
       geom_smooth(color = "black", method = "gam", level = 0.95, size = 0.5) +
       labs(title = paste0(.," (Imp.: ", round(varimp[.],2),")"),
             x = paste0(.," (NA: ", misspct[.] * 100,"%)"))
+    if (length(ylim)) p = p + ylim(ylim)
     
     
     # Inner Histogram
@@ -163,7 +165,7 @@ plot_distr_metr = function(outpdf, df = df.plot, vars = metr, misspct, nbins = 5
     
     # Put all together
     p = p + 
-      scale_y_continuous(limits = c(yrange[1] - 0.2*(yrange[2] - yrange[1]), NA)) +
+      scale_y_continuous(limits = c(yrange[1] - 0.2*(yrange[2] - yrange[1]), ifelse(length(ylim), ylim[2], NA))) +
       theme(plot.title = element_text(hjust = 0.5)) +
       annotation_custom(ggplotGrob(p.inner), xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = yrange[1]) 
     #if (. != vars[1]) p = p + theme(legend.position = "none") 
@@ -317,7 +319,7 @@ plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", col
   pred_obj = mysummary(data.frame(obs = y_holdout, pred = yhat_holdout))
   spearman = round(pred_obj["spearman"], 2)
   df.perf = data.frame(y = y_holdout, yhat = yhat_holdout, res = y_holdout - yhat_holdout, 
-                       midpoint = cut(df.perf$yhat, quantile(df.perf$yhat, seq(0,1,0.2)), include.lowest = TRUE))
+                       midpoint = cut(yhat_holdout, quantile(yhat_holdout, seq(0,1,0.2)), include.lowest = TRUE))
   df.preds = data.frame(type = c(rep("y", length(y_holdout)), rep("yhat", length(y_holdout))),
                         value = c(y_holdout, yhat_holdout))
   df.calib = df.perf %>% group_by(midpoint) %>% summarise(y = mean(y), yhat = mean(yhat))
@@ -377,9 +379,6 @@ plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", col
   plots = list(p_perf, p_res, p_calib, p_pred)
     labs(title = "Calibration", x = "Midpoint Predictions", y = "Observed Average") +
     theme_my 
-  
-  # Plot
-  plots = list(p_perf, p_pred, p_calib)
   ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
 }
 

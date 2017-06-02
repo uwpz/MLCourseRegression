@@ -63,7 +63,7 @@ summary(df[metr])
 
 
 ## Check for outliers and skewness
-plot_distr_metr("./output/distr_metr.pdf", df, vars = metr, misspct = misspct)
+plot_distr_metr("./output/distr_metr.pdf", df, vars = metr, misspct = misspct, ylim = c(0,4))
 
 
 
