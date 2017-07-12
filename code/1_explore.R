@@ -69,7 +69,7 @@ plot_distr_metr("./output/distr_metr.pdf", df, vars = metr, misspct = misspct, y
 
 ## Outliers + Skewness
 # Winsorize
-df[,metr] = map(df[metr], ~ {
+df[metr] = map(df[metr], ~ {
   .[. > quantile(., 0.99, na.rm = TRUE)] = quantile(., 0.99, na.rm = TRUE)
   .[. < quantile(., 0.01, na.rm = TRUE)] = quantile(., 0.01, na.rm = TRUE)
   . }
@@ -120,7 +120,8 @@ summary(df[nomi])
 
 ## Create compact covariates for "too many members" columns 
 topn_toomany = 4
-(tmp = map_int(df[nomi], ~ length(levels(.)))) 
+tmp = map_int(df[nomi], ~ length(levels(.)))
+tmp[order(tmp, decreasing = TRUE)]
 (toomany = names(tmp)[which(tmp > topn_toomany)])
 (toomany = setdiff(toomany, c("BERUF_GRP_SL"))) #Define exception for important variables
 df[paste0(toomany,"_OTHER_")] = map(df[toomany], ~ {

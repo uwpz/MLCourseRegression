@@ -34,6 +34,7 @@ df.interpret$INT = 1 #Add intercept variable (needed for partial dependence plot
 nsim = 3
 yhat_holdout = c()
 y_holdout = c()
+df.holdout_sim = c()
 for (sim in 1:nsim) {
   
   # Hold out a k*100% set
@@ -54,12 +55,13 @@ for (sim in 1:nsim) {
   yhat_holdout = c(yhat_holdout, predict(fit, df.holdout[predictors])) 
   y_holdout = c(y_holdout, df.holdout$target)
   print(cor(yhat_holdout, y_holdout, method = "spearman"))
+  df.holdout_sim = bind_rows(df.holdout_sim, df.holdout)
 }
 
 
-## Plot performance
+## Plot performance & Diagnosis
 plot_performance("./output/performance.pdf", yhat_holdout, y_holdout)
-
+plot_diagnosis("./output/diagnosis.pdf", df.holdout_sim, res = yhat_holdout - y_holdout, ylim = c(-2,2))
 
 
 

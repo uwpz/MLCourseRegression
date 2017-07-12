@@ -313,8 +313,6 @@ plot_corr_nomi <- function(outpdf, df, vars = nomi,
 ## ROC, Calibration, Gain, Lift, Confusion
 plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", colors = twocol, colgrad = colhex, ylim = NULL,
                             ncols = 2, nrows = 2, w = 12, h = 8) {
-
-  
   # Prepare
   pred_obj = mysummary(data.frame(obs = y_holdout, pred = yhat_holdout))
   spearman = round(pred_obj["spearman"], 2)
@@ -379,6 +377,36 @@ plot_performance = function(outpdf, yhat_holdout, y_holdout, color = "blue", col
   plots = list(p_perf, p_res, p_calib, p_pred)
     labs(title = "Calibration", x = "Midpoint Predictions", y = "Observed Average") +
     theme_my 
+  ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
+}
+
+
+
+## Diagnosis: Residuals per predictor
+plot_diagnosis = function(outpdf, df.diagnosis, res, vars = predictors, ylim = NULL,
+                          ncols = 3, nrows = 3, w = 12, h = 8) {
+  plots = map(vars, ~ {
+    #. = vars[1]
+    print(.)
+    
+    # Prepare
+    df.res = df.diagnosis[.]
+    df.res$res = res
+    
+    # Plot 
+    p = ggplot(data = df.res, aes_string(., "res")) +
+      geom_hex() + 
+      scale_fill_gradientn(colors = colgrad, name = "count")
+    if (is.factor(df.res[[.]])) {
+      p = p + geom_smooth(color = "black", method = "gam", level = 0.95, size = 0.5, aes(group = 1)) 
+    } else {
+      p = p + geom_smooth(color = "black", method = "gam", level = 0.95, size = 0.5)
+    } 
+    p = p + labs(title = "Residuals", y = expression(paste(hat(y) - y))) +
+      theme(plot.title = element_text(hjust = 0.5))
+    if (length(ylim)) p = p + ylim(ylim)
+    p  
+  })
   ggsave(outpdf, marrangeGrob(plots, ncol = ncols, nrow = nrows, top = NULL), width = w, height = h)
 }
 
@@ -690,4 +718,139 @@ plot_inter_active = function(outfile, vars = inter, df = df.interpret, fit = fit
   
 }
 
+
+
+#######################################################################################################################-
+# Caret definition of MicrosofMl algorithms ----
+#######################################################################################################################-
+
+## rxFastTrees (boosted trees)
+
+ms_boosttree = list()
+ms_boosttree$label = "MicrosoftML rxFastTrees"
+ms_boosttree$library = "MicrosoftML"
+ms_boosttree$type = "Classification"
+ms_boosttree$parameters = 
+  read.table(header = TRUE, sep = ",", strip.white = TRUE, 
+             text = "parameter,class,label
+             numTrees,numeric,Boosting Interations
+             numLeaves,numeric,Number of Leaves
+             learningRate,numeric,Shrinkage"                             
+  )
+
+ms_boosttree$grid = function(x, y, len = NULL, search = "grid") {
+  if (search == "grid") {
+    out <- expand.grid(numTrees = floor((1:len) * 50),
+                       numLeaves = 2^seq(1, len),
+                       learningRate = .1)
+  } else {
+    out <- data.frame(numTrees = floor(runif(len, min = 1, max = 5000)),
+                      numLeaves = 2^sample(1:10, replace = TRUE, size = len),         
+                      learningRate = runif(len, min = .001, max = .6)) 
+    out <- out[!duplicated(out),]
+  }
+  out
+}
+
+ms_boosttree$fit = function(x, y, wts, param, lev, last, classProbs, ...) { 
+  #browser()
+  theDots = list(...)
+  #if (is.factor(y) && length(lev) == 2) {y = ifelse(y == lev[1], 1, 0)}
+  #y = factor(y, levels = c(1,0))
+  #x = as.matrix(x)
+  modArgs <- list(formula = paste("y~", paste0(names(x), collapse = "+")),
+                  data = cbind(x, y),
+                  numTrees = param$numTrees,
+                  numLeaves = param$numLeaves,
+                  learningRate = param$learningRate,
+                  type = "binary")
+  if (length(theDots) > 0) modArgs <- c(modArgs, theDots)
+  do.call("rxFastTrees", modArgs)
+}
+
+ms_boosttree$predict = function(modelFit, newdata, submodels = NULL) {
+  #browser()
+  out = rxPredict(modelFit, newdata)[,"Probability.Y"]
+  if (length(modelFit$obsLevels) == 2) {
+    out <- ifelse(out >= 0.5, "Y", "N")
+  }
+  out
+}
+
+ms_boosttree$prob = function(modelFit, newdata, submodels = NULL) {
+  #browser()
+  out = rxPredict(modelFit, newdata)[,"Probability.Y"]
+  if (length(modelFit$obsLevels) == 2) {
+    out <- cbind(out, 1-out)
+    colnames(out) <- c("Y","N")
+  }
+  out
+}
+
+ms_boosttree$levels = function(x) {c("N","Y")}
+
+ms_boosttree$sort = function(x) {
+  x[order(x$numTrees, x$numLeaves, x$learningRate), ]
+}
+
+
+
+## rxForest (random Forest)
+
+ms_forest = list()
+ms_forest$label = "MicrosoftML rxFastForest"
+ms_forest$library = "MicrosoftML"
+ms_forest$type = "Classification"
+ms_forest$parameters = 
+  read.table(header = TRUE, sep = ",", strip.white = TRUE,
+             text = "parameter,class,label
+             numTrees,numeric,Number of Trees
+             splitFraction,numeric,Fraction of features in split"
+  )
+
+ms_forest$grid = function(x, y, len = NULL, search = "grid") {
+  if (search == "grid") {
+    out <- expand.grid(numTrees = floor((1:len) * 50),
+                       splitFraction = seq(0.01, 1, length.out = len))
+  } else {
+    out <- data.frame(numTrees = floor(runif(len, min = 1, max = 5000)),
+                      splitFraction = runif(len, min = 0.01, max = 1))
+    out <- out[!duplicated(out),]
+  }
+  out
+}
+
+ms_forest$fit = function(x, y, wts, param, lev, last, classProbs, ...) { 
+  theDots = list(...)
+  modArgs <- list(formula = paste("y~", paste0(names(x), collapse = "+")),
+                  data = cbind(x, y),
+                  numTrees = param$numTrees,
+                  splitFraction = param$splitFraction,
+                  type = "binary")
+  if (length(theDots) > 0) modArgs <- c(modArgs, theDots)
+  do.call("rxFastForest", modArgs)
+}
+
+ms_forest$predict = function(modelFit, newdata, submodels = NULL) {
+  out = rxPredict(modelFit, newdata)[,"Probability.Y"]
+  if (length(modelFit$obsLevels) == 2) {
+    out <- ifelse(out >= 0.5, "Y", "N")
+  }
+  out
+}
+
+ms_forest$prob = function(modelFit, newdata, submodels = NULL) {
+  out = rxPredict(modelFit, newdata)[,"Probability.Y"]
+  if (length(modelFit$obsLevels) == 2) {
+    out <- cbind(out, 1-out)
+    colnames(out) <- c("Y","N")
+  }
+  out
+}
+
+ms_forest$levels = function(x) {c("N","Y")}
+
+ms_forest$sort = function(x) {
+  x[order(x$numTrees, x$splitFraction), ]
+}
 
