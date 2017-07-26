@@ -1,4 +1,13 @@
 
+df.ames = read_delim("./data/AmesHousing.txt", delim = "\t")
+colnames(df.ames) = str_replace_all(colnames(df.ames), " ", "_")
+summary(mutate_if(df.ames, is.character, as.factor))
+
+
+hist(log(df.ames$Screen_Porch+1))
+
+
+
 "C:/My/Stat/My"
 
 
@@ -26,7 +35,7 @@ test = foreach(i = 1:length(l.split), .combine = c) %dopar% {
 }
 
 
-df.tmp = mtcars %>% %>% top_n(2) %>% select(carb)
+df.tmp = mtcars %>% top_n(2) %>% select(carb)
 top_n(df.tmp, 2)
 
 count_(mtcars, "carb", sort=TRUE)$carb[1:2]
